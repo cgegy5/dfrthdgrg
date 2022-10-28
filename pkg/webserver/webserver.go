@@ -29,12 +29,15 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"perkeep.org/pkg/webserver/listen"
+	"tailscale.com/tsnet"
+	"tailscale.com/util/strs"
 
 	"go4.org/net/throttle"
 	"go4.org/wkfs"
@@ -176,11 +179,37 @@ func (s *Server) Listen(addr string) error {
 	if addr == "" {
 		return fmt.Errorf("<host>:<port> needs to be provided to start listening")
 	}
-
 	var err error
-	s.listener, err = listen.Listen(addr)
-	if err != nil {
-		return fmt.Errorf("Failed to listen on %s: %v", addr, err)
+
+	if authKeyFile, ok := strs.CutPrefix(addr, "tailscale:"); ok {
+		if authKeyFile == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return err
+			}
+			authKeyFile = filepath.Join(home, ".perkeep", "tailscale-auth-key")
+			key, err := os.ReadFile(authKeyFile)
+			if err != nil {
+				return err
+			}
+			ts := &tsnet.Server{
+				AuthKey:  strings.TrimSpace(string(key)),
+				Hostname: "perkeep",
+			}
+			if err := ts.Start(); err != nil {
+				return err
+			}
+			ln, err := ts.Listen("tcp", ":80")
+			if err != nil {
+				return err
+			}
+			s.listener = ln
+		}
+	} else {
+		s.listener, err = listen.Listen(addr)
+		if err != nil {
+			return fmt.Errorf("Failed to listen on %s: %v", addr, err)
+		}
 	}
 	base := s.ListenURL()
 	s.printf("Starting to listen on %s\n", base)
